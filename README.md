@@ -9,6 +9,19 @@
 [**Getting Started**](#getting-started) | [**Pretrained VLAs**](#pretrained-vlas) | [**Installation**](#installation) | [**Fine-Tuning OpenVLA via LoRA**](#fine-tuning-openvla-via-lora) | [**Fully Fine-Tuning OpenVLA**](#fully-fine-tuning-openvla) |
 [**Training VLAs from Scratch**](#training-vlas-from-scratch) | [**Evaluating OpenVLA**](#evaluating-openvla) | [**Project Website**](https://openvla.github.io/)
 
+## Modified Installation Instructions (2026/1/5)
+
+This repo makes simple changes to allow using cuda 12.8 for 50-series cards. Use the following to install:
+
+```bash
+conda create -n openvla python=3.10
+conda activate openvla
+pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+git clone https://github.com/tthayer93/openvla.git
+cd openvla
+pip install -e .
+pip install "flash_attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp310-cp310-linux_x86_64.whl"
+```
 
 <hr style="border: 2px solid gray;"></hr>
 
