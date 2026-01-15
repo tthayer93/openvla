@@ -11,7 +11,7 @@
 
 ## Modified Installation Instructions (2026/1/5)
 
-This repo makes simple changes to allow using cuda 12.8 for 50-series cards. Use the following to install:
+Instructions for cuda 12.8 (Nvidia 50--series cards):
 
 ```bash
 conda create -n openvla python=3.10
@@ -21,6 +21,30 @@ git clone https://github.com/tthayer93/openvla.git
 cd openvla
 pip install -e .
 pip install "flash_attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp310-cp310-linux_x86_64.whl"
+pip install tf-gpu
+pip install tensorflow[and-cuda]
+```
+
+Instructions for ROCm 7.1 (AMD 9---series cards):
+
+```bash
+export PYTORCH_ROCM_ARCH="gfx1201" # Add to .bashrc
+export FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE # Add to .bashrc
+conda create -n openvla python=3.10
+conda activate openvla
+git clone git@github.com:tthayer93/openvla.git
+cd openvla/
+pip install -e .
+cd ..
+pip uninstall torch torchvision torchaudio
+pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.1
+python -c 'import torch; print(torch.cuda.is_available())'
+pip uninstall tensorflow
+pip install tensorflow-rocm==2.19.1 -f https://repo.radeon.com/rocm/manylinux/rocm-rel-7.1/
+pip install ninja packaging
+git clone https://github.com/Dao-AILab/flash-attention.git
+cd flash-attention
+FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE && FLASH_ATTENTION_SKIP_CK_BUILD=FALSE python setup.py install
 ```
 
 <hr style="border: 2px solid gray;"></hr>
