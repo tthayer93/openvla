@@ -11,7 +11,7 @@
 
 ## Modified Installation Instructions (2026/1/5)
 
-Instructions for cuda 12.8 (Nvidia 50--series cards):
+Instructions for cuda 12.8 (Nvidia 50-- series cards):
 
 ```bash
 conda create -n openvla python=3.10
@@ -25,7 +25,7 @@ pip install tf-gpu
 pip install tensorflow[and-cuda]
 ```
 
-Instructions for ROCm 7.1 (AMD 9---series cards):
+Instructions for ROCm 7.1 (AMD 9--- series cards):
 
 ```bash
 export PYTORCH_ROCM_ARCH="gfx1201" # Add to .bashrc
