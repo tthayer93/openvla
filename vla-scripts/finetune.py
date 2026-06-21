@@ -35,8 +35,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
+import wandb
 from transformers import AutoConfig, AutoImageProcessor
-from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
@@ -102,6 +102,8 @@ class FinetuneConfig:
                                                                     #   => CAUTION: Reduces memory but hurts performance
 
     # Tracking Parameters
+    wandb_project: str = "openvla"                                  # Name of W&B project to log to (use default!)
+    wandb_entity: str = "stanford-voltron"                          # Name of entity to log under
     run_id_note: Optional[str] = None                               # Extra note for logging, Weights & Biases
 
     # fmt: on
@@ -234,6 +236,10 @@ def finetune(cfg: FinetuneConfig) -> None:
         num_workers=0,  # Important =>> Set to 0 if using RLDS; TFDS rolls its own parallelism!
     )
 
+    # Initialize Logging =>> W&B
+    if distributed_state.is_main_process:
+        wandb.init(entity=cfg.wandb_entity, project=cfg.wandb_project, name=f"ft+{exp_id}")
+
     # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
     recent_losses = deque(maxlen=cfg.grad_accumulation_steps)
     recent_action_accuracies = deque(maxlen=cfg.grad_accumulation_steps)
@@ -298,6 +304,14 @@ def finetune(cfg: FinetuneConfig) -> None:
                 print("train_loss: ", smoothened_loss)
                 print("action_accuracy: ", smoothened_action_accuracy)
                 print("l1_loss: ", smoothened_l1_loss)
+                wandb.log(
+                    {
+                        "train_loss": smoothened_loss,
+                        "action_accuracy": smoothened_action_accuracy,
+                        "l1_loss": smoothened_l1_loss,
+                    },
+                    step=gradient_step_idx,
+                )
 
             # Optimizer Step
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
