@@ -22,6 +22,7 @@ Run with:
 import os
 from collections import deque
 from dataclasses import dataclass
+import csv
 from pathlib import Path
 from typing import Optional
 
@@ -35,8 +36,12 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from transformers import AutoModelForVision2Seq, AutoProcessor, BitsAndBytesConfig
-import wandb
 from transformers import AutoConfig, AutoImageProcessor
+
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 from prismatic.models.backbones.llm.prompting import PurePromptBuilder, VicunaV15ChatPromptBuilder
 from prismatic.util.data_utils import PaddedCollatorForActionPrediction
@@ -102,9 +107,9 @@ class FinetuneConfig:
                                                                     #   => CAUTION: Reduces memory but hurts performance
 
     # Tracking Parameters
-    wandb_project: str = "openvla"                                  # Name of W&B project to log to (use default!)
-    wandb_entity: str = "stanford-voltron"                          # Name of entity to log under
-    run_id_note: Optional[str] = None                               # Extra note for logging, Weights & Biases
+    wandb_project: Optional[str] = None                         # W&B project name (if specified, wandb logging is enabled)
+    wandb_entity: Optional[str] = None                          # W&B entity/account name
+    run_id_note: Optional[str] = None                           # Extra note for logging, Weights & Biases
 
     # fmt: on
 
@@ -236,9 +241,25 @@ def finetune(cfg: FinetuneConfig) -> None:
         num_workers=0,  # Important =>> Set to 0 if using RLDS; TFDS rolls its own parallelism!
     )
 
-    # Initialize Logging =>> W&B
+    # Initialize Logging =>> W&B and CSV
+    _wandb_enabled = distributed_state.is_main_process and cfg.wandb_project is not None and wandb is not None
+
+    if _wandb_enabled:
+        run_name = f"ft+{exp_id}"
+        experiment = wandb.init(entity=cfg.wandb_entity, project=cfg.wandb_project, name=run_name)
+        print(f"\n{'='*60}")
+        print("W&B logging enabled.")
+        print(f"  Project: {cfg.wandb_project}")
+        print(f"  Entity:  {cfg.wandb_entity}")
+        print(f"  Run ID:  {run_name}")
+        print("Metrics below would be written to W&B:")
+        print('='*60)
+
+    # Initialize CSV logging (always enabled for main process)
     if distributed_state.is_main_process:
-        wandb.init(entity=cfg.wandb_entity, project=cfg.wandb_project, name=f"ft+{exp_id}")
+        with open(run_dir / "log.csv", "w") as f:
+            writer = csv.writer(f)
+            writer.writerow(["gradient_step", "train_loss", "action_accuracy", "l1_loss"])
 
     # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
     recent_losses = deque(maxlen=cfg.grad_accumulation_steps)
@@ -299,11 +320,30 @@ def finetune(cfg: FinetuneConfig) -> None:
             smoothened_action_accuracy = sum(recent_action_accuracies) / len(recent_action_accuracies)
             smoothened_l1_loss = sum(recent_l1_losses) / len(recent_l1_losses)
 
-            # Push Metrics to W&B (every 10 gradient steps)
+            # Push Metrics to W&B (every 10 gradient steps) and always write CSV log on every step
             if distributed_state.is_main_process and gradient_step_idx % 10 == 0:
                 print("train_loss: ", smoothened_loss)
                 print("action_accuracy: ", smoothened_action_accuracy)
                 print("l1_loss: ", smoothened_l1_loss)
+
+            # Write metrics to CSV at every gradient step
+            if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
+                with open(run_dir / "log.csv", "a") as csvf:
+                    writer = csv.writer(csvf)
+                    writer.writerow([
+                        gradient_step_idx,
+                        smoothened_loss,
+                        smoothened_action_accuracy,
+                        smoothened_l1_loss,
+                    ])
+
+            # Promoter Step (every grad accumulation steps)
+            if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
+                optimizer.step()
+                optimizer.zero_grad()
+                progress.update()
+
+            if _wandb_enabled:
                 wandb.log(
                     {
                         "train_loss": smoothened_loss,
@@ -312,12 +352,6 @@ def finetune(cfg: FinetuneConfig) -> None:
                     },
                     step=gradient_step_idx,
                 )
-
-            # Optimizer Step
-            if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
-                optimizer.step()
-                optimizer.zero_grad()
-                progress.update()
 
             # Save Model Checkpoint =>> by default, only keeps the latest checkpoint, continually overwriting it!
             if gradient_step_idx > 0 and gradient_step_idx % cfg.save_steps == 0:
