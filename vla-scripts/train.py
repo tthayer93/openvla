@@ -169,10 +169,10 @@ def train(cfg: TrainConfig) -> None:
         stage = "vla-last-layer-train"  # Fine-tuning LLM last layer only
     else:
         raise ValueError(
-            "Weight freezing configuration not supported. VLA config has the following parameters: "
-            f"freeze_vision_backbone: {cfg.vla.freeze_vision_backbone}"
-            f"freeze_llm_backbone: {cfg.vla.freeze_llm_backbone}"
-            f"unfreeze_last_llm_layer: {cfg.vla.unfreeze_last_llm_layer}"
+            f"Weight freezing configuration not supported. VLA config has the following parameters:\n"
+            f"  freeze_vision_backbone: {cfg.vla.freeze_vision_backbone}\n"
+            f"  freeze_llm_backbone: {cfg.vla.freeze_llm_backbone}\n"
+            f"  unfreeze_last_llm_layer: {cfg.vla.unfreeze_last_llm_layer}"
         )
 
     # [Explicit] Call to `freeze_backbones` here for clarity =>> will log exactly what is/is not frozen

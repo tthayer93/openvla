@@ -152,7 +152,7 @@ def finetune(cfg: FinetuneConfig) -> None:
 
     # Load OpenVLA Processor and Model using HF AutoClasses
     processor = AutoProcessor.from_pretrained(cfg.vla_path, trust_remote_code=True)
-    vla = AutoModelForVision2Seq.from_pretrained(
+    base_vla = AutoModelForVision2Seq.from_pretrained(
         cfg.vla_path,
         torch_dtype=torch.bfloat16,
         quantization_config=quantization_config,
@@ -162,9 +162,9 @@ def finetune(cfg: FinetuneConfig) -> None:
 
     # Device Placement =>> note that BitsAndBytes automatically handles for quantized training
     if cfg.use_quantization:
-        vla = prepare_model_for_kbit_training(vla)
+        base_vla = prepare_model_for_kbit_training(base_vla)
     else:
-        vla = vla.to(device_id)
+        base_vla = base_vla.to(device_id)
 
     # [LoRA] Wrap Model w/ PEFT `LoraConfig` =>> by default we set `target_modules=all-linear`
     if cfg.use_lora:
@@ -175,11 +175,14 @@ def finetune(cfg: FinetuneConfig) -> None:
             target_modules="all-linear",
             init_lora_weights="gaussian",
         )
-        vla = get_peft_model(vla, lora_config)
+        vla = get_peft_model(base_vla, lora_config)
         vla.print_trainable_parameters()
 
     # Wrap VLA in PyTorch DDP Wrapper for Multi-GPU Training
-    vla = DDP(vla, device_ids=[device_id], find_unused_parameters=True, gradient_as_bucket_view=True)
+    if cfg.use_lora:
+        vla = DDP(vla, device_ids=[device_id], find_unused_parameters=True, gradient_as_bucket_view=True)
+    else:
+        vla = DDP(base_vla, device_ids=[device_id], find_unused_parameters=True, gradient_as_bucket_view=True)
 
     # Create Optimizer =>> note that we default to a simple constant learning rate!
     trainable_params = [param for param in vla.parameters() if param.requires_grad]
@@ -239,6 +242,9 @@ def finetune(cfg: FinetuneConfig) -> None:
     recent_action_accuracies = deque(maxlen=cfg.grad_accumulation_steps)
     recent_l1_losses = deque(maxlen=cfg.grad_accumulation_steps)
 
+    # Gradient step counter (increments only when optimizer.step() is called)
+    gradient_step_idx = 0
+
     # Train!
     with tqdm.tqdm(total=cfg.max_steps, leave=False) as progress:
         vla.train()
@@ -267,7 +273,11 @@ def finetune(cfg: FinetuneConfig) -> None:
 
             # Compute Accuracy
             correct_preds = (action_preds == action_gt) & mask
-            action_accuracy = correct_preds.sum().float() / mask.sum().float()
+            mask_sum = mask.sum().float()
+            if mask_sum > 0:
+                action_accuracy = correct_preds.sum().float() / mask_sum
+            else:
+                action_accuracy = torch.tensor(0.0, device=correct_preds.device)
 
             # Compute L1 Loss on Predicted (Continuous) Actions
             continuous_actions_pred = torch.tensor(
@@ -282,9 +292,6 @@ def finetune(cfg: FinetuneConfig) -> None:
             recent_losses.append(loss.item())
             recent_action_accuracies.append(action_accuracy.item())
             recent_l1_losses.append(action_l1_loss.item())
-
-            # Compute gradient step index
-            gradient_step_idx = batch_idx // cfg.grad_accumulation_steps
 
             # Compute smoothened train metrics
             #   =>> Equal to current step metrics when not using gradient accumulation
@@ -301,6 +308,7 @@ def finetune(cfg: FinetuneConfig) -> None:
 
             # Optimizer Step
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
+                gradient_step_idx += 1
                 optimizer.step()
                 optimizer.zero_grad()
                 progress.update()
@@ -323,11 +331,7 @@ def finetune(cfg: FinetuneConfig) -> None:
                 # Merge LoRA weights into model backbone for faster inference
                 #   =>> Note that merging is slow and can be done post-hoc to speed up training
                 if cfg.use_lora:
-                    base_vla = AutoModelForVision2Seq.from_pretrained(
-                        cfg.vla_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, trust_remote_code=True
-                    )
-                    merged_vla = PeftModel.from_pretrained(base_vla, adapter_dir)
-                    merged_vla = merged_vla.merge_and_unload()
+                    merged_vla = vla.module.merge_and_unload()
                     if distributed_state.is_main_process:
                         if cfg.save_latest_checkpoint_only:
                             # Overwrite latest checkpoint
@@ -336,7 +340,7 @@ def finetune(cfg: FinetuneConfig) -> None:
                             print(f"Saved Model Checkpoint for Step {gradient_step_idx} at: {run_dir}")
                         else:
                             # Prepare to save checkpoint in new directory
-                            checkpoint_dir = Path(str(run_dir) + f"--{gradient_step_idx}_chkpt")
+                            checkpoint_dir = run_dir / f"{run_dir.name}--{gradient_step_idx}_chkpt"
                             os.makedirs(checkpoint_dir, exist_ok=True)
 
                             # Save dataset statistics to new directory
@@ -354,6 +358,30 @@ def finetune(cfg: FinetuneConfig) -> None:
             # Stop training when max_steps is reached
             if gradient_step_idx == cfg.max_steps:
                 print(f"Max step {cfg.max_steps} reached! Stopping training...")
+                # Ensure final checkpoint is saved even if max_steps doesn't align with save_steps
+                if gradient_step_idx % cfg.save_steps != 0 and distributed_state.is_main_process:
+                    print(f"Saving final Model Checkpoint for Step {gradient_step_idx}")
+                    save_dir = adapter_dir if cfg.use_lora else run_dir
+                    processor.save_pretrained(run_dir)
+                    vla.module.save_pretrained(save_dir)
+
+                    dist.barrier()
+
+                    if cfg.use_lora:
+                        merged_vla = vla.module.merge_and_unload()
+                        if cfg.save_latest_checkpoint_only:
+                            merged_vla.save_pretrained(run_dir)
+                            print(f"Saved final Model Checkpoint for Step {gradient_step_idx} at: {run_dir}")
+                        else:
+                            checkpoint_dir = run_dir / f"{run_dir.name}--{gradient_step_idx}_chkpt"
+                            os.makedirs(checkpoint_dir, exist_ok=True)
+                            save_dataset_statistics(vla_dataset.dataset_statistics, checkpoint_dir)
+                            processor.save_pretrained(checkpoint_dir)
+                            merged_vla.save_pretrained(checkpoint_dir)
+                            print(f"Saved final Model Checkpoint for Step {gradient_step_idx} at: {checkpoint_dir}")
+
+                    dist.barrier()
+
                 break
 
 

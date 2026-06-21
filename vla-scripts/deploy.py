@@ -85,8 +85,16 @@ class OpenVLAServer:
 
         # [Hacky] Load Dataset Statistics from Disk (if passing a path to a fine-tuned model)
         if os.path.isdir(self.openvla_path):
-            with open(Path(self.openvla_path) / "dataset_statistics.json", "r") as f:
-                self.vla.norm_stats = json.load(f)
+            stats_path = Path(self.openvla_path) / "dataset_statistics.json"
+            if stats_path.exists():
+                with open(stats_path, "r") as f:
+                    self.vla.norm_stats = json.load(f)
+            else:
+                logging.warning(
+                    "No `dataset_statistics.json` found at %s; actions will remain normalized. "
+                    "Provide the `unnorm_key` parameter explicitly in requests or ensure statistics were saved.",
+                    str(stats_path)
+                )
 
     def predict_action(self, payload: Dict[str, Any]) -> str:
         try:
@@ -100,9 +108,12 @@ class OpenVLAServer:
             unnorm_key = payload.get("unnorm_key", None)
 
             # Run VLA Inference
-            prompt = get_openvla_prompt(instruction, self.openvla_path)
-            inputs = self.processor(prompt, Image.fromarray(image).convert("RGB")).to(self.device, dtype=torch.bfloat16)
-            action = self.vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
+            action = self.vla.predict_action(
+                Image.fromarray(image).convert("RGB"),
+                instruction,
+                unnorm_key=unnorm_key,
+                do_sample=False,
+            )
             if double_encode:
                 return JSONResponse(json_numpy.dumps(action))
             else:
