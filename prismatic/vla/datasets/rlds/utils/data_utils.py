@@ -83,8 +83,9 @@ def normalize_action_and_proprio(traj: Dict, metadata: Dict, normalization_type:
                 high = metadata[key]["q99"]
 
             # Identify zero-variance dimensions first (avoid division by near-zero)
+            zmsk = metadata[key].get("mask", tf.ones_like(metadata[key]["min"], dtype=tf.bool))
             zeros_mask = metadata[key]["min"] == metadata[key]["max"]
-            valid_mask = mask & ~zeros_mask
+            valid_mask = zmsk & ~zeros_mask
 
             traj = dl.transforms.selective_tree_map(
                 traj,
