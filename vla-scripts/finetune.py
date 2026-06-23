@@ -110,7 +110,8 @@ class FinetuneConfig:
     wandb_project: Optional[str] = None                         # W&B project name (if specified, wandb logging is enabled)
     wandb_entity: Optional[str] = None                          # W&B entity/account name
     run_id_note: Optional[str] = None                           # Extra note for logging, Weights & Biases
-
+    csv_logging: bool = False                                   # Enable logging in csv file
+    log_freq: int = 10                                          # How many steps between log entries
     # fmt: on
 
 
@@ -255,8 +256,8 @@ def finetune(cfg: FinetuneConfig) -> None:
         print("Metrics below would be written to W&B:")
         print('='*60)
 
-    # Initialize CSV logging (always enabled for main process)
-    if distributed_state.is_main_process:
+    # Initialize CSV logging
+    if cfg.csv_logging and distributed_state.is_main_process:
         with open(run_dir / "log.csv", "w") as f:
             writer = csv.writer(f)
             writer.writerow(["gradient_step", "train_loss", "action_accuracy", "l1_loss"])
@@ -320,38 +321,32 @@ def finetune(cfg: FinetuneConfig) -> None:
             smoothened_action_accuracy = sum(recent_action_accuracies) / len(recent_action_accuracies)
             smoothened_l1_loss = sum(recent_l1_losses) / len(recent_l1_losses)
 
-            # Push Metrics to W&B (every 10 gradient steps) and always write CSV log on every step
-            if distributed_state.is_main_process and gradient_step_idx % 10 == 0:
-                print("train_loss: ", smoothened_loss)
-                print("action_accuracy: ", smoothened_action_accuracy)
-                print("l1_loss: ", smoothened_l1_loss)
-
-            # Write metrics to CSV at every gradient step
-            if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
-                with open(run_dir / "log.csv", "a") as csvf:
-                    writer = csv.writer(csvf)
-                    writer.writerow([
-                        gradient_step_idx,
-                        smoothened_loss,
-                        smoothened_action_accuracy,
-                        smoothened_l1_loss,
-                    ])
+            # Push Metrics to W&B or write CSV log
+            if distributed_state.is_main_process and gradient_step_idx % cfg.log_freq == 0:
+                if _wandb_enabled:
+                    wandb.log(
+                        {
+                            "train_loss": smoothened_loss,
+                            "action_accuracy": smoothened_action_accuracy,
+                            "l1_loss": smoothened_l1_loss,
+                        },
+                        step=gradient_step_idx,
+                    )
+                if cfg.csv_logging:
+                    with open(run_dir / "log.csv", "a") as csvf:
+                        writer = csv.writer(csvf)
+                        writer.writerow([
+                            gradient_step_idx,
+                            smoothened_loss,
+                            smoothened_action_accuracy,
+                            smoothened_l1_loss,
+                        ])
 
             # Promoter Step (every grad accumulation steps)
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
                 optimizer.step()
                 optimizer.zero_grad()
                 progress.update()
-
-            if _wandb_enabled:
-                wandb.log(
-                    {
-                        "train_loss": smoothened_loss,
-                        "action_accuracy": smoothened_action_accuracy,
-                        "l1_loss": smoothened_l1_loss,
-                    },
-                    step=gradient_step_idx,
-                )
 
             # Save Model Checkpoint =>> by default, only keeps the latest checkpoint, continually overwriting it!
             if gradient_step_idx > 0 and gradient_step_idx % cfg.save_steps == 0:
