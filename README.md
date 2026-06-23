@@ -23,6 +23,7 @@ pip install -e .
 pip install "flash_attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.8cxx11abiTRUE-cp310-cp310-linux_x86_64.whl"
 pip install tf-gpu
 pip install tensorflow[and-cuda]
+pip install --upgrade "protobuf==6.32"
 ```
 
 Instructions for ROCm 7.1 (AMD 9--- series cards):
