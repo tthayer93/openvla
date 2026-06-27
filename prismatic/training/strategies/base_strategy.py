@@ -283,6 +283,8 @@ class TrainingStrategy(ABC):
             # Zero Gradients (just in case)
             self.optimizer.zero_grad()
 
+            any_steps_completed = False
+
             # [Contract] DataLoader wraps RLDS Loader (`.as_numpy_iterator() =>> implicit `.repeat()`)
             #   => This means looping over the DataLoader is basically "infinite" (so no outer loop over epochs).
             #      Slightly breaks default PyTorch semantics, which is why we adaptively compute `epoch` below.
@@ -366,7 +368,7 @@ class TrainingStrategy(ABC):
                                 continuous_actions_pred_ds, continuous_actions_gt_ds
                             )
                             metrics.commit_for_dataset(
-                                dataset_name=ds.decode(), action_accuracy=action_accuracy_ds, l1_loss=action_l1_loss_ds
+                                dataset_name=ds, action_accuracy=action_accuracy_ds, l1_loss=action_l1_loss_ds
                             )
 
                 # === Gradient Step ===
@@ -378,6 +380,7 @@ class TrainingStrategy(ABC):
                 self.optimizer.step()
                 self.lr_scheduler.step()
                 self.optimizer.zero_grad()
+                any_steps_completed = True
 
                 # Compute epoch value using number of completed gradient steps
                 denom = len(vla_dataset) // self.global_batch_size
@@ -406,6 +409,6 @@ class TrainingStrategy(ABC):
                 progress.set_description(status)
 
         # Save final checkpoint when training completes (VLA dataset exhausted)
-        if loss.item() is not None:
+        if any_steps_completed:
             self.save_checkpoint(metrics.run_dir, metrics.global_step, epoch, loss.item(), only_trainable=not save_full_model)
             dist.barrier()

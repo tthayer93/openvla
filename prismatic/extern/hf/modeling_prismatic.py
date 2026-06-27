@@ -466,9 +466,9 @@ class PrismaticForConditionalGeneration(PrismaticPreTrainedModel):
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
 
-        # If `input_embeds` are passed, we only want to use them in the 1st generation step
+        # If `inputs_embeds` are passed, we only want to use them in the 1st generation step
         if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"input_embeds": inputs_embeds}
+            model_inputs = {"inputs_embeds": inputs_embeds}
         else:
             model_inputs = {"input_ids": input_ids}
 
