@@ -118,7 +118,7 @@ class OpenVLAServer:
                 return JSONResponse(json_numpy.dumps(action))
             else:
                 return JSONResponse(action)
-        except:  # noqa: E722
+        except Exception:
             logging.error(traceback.format_exc())
             logging.warning(
                 "Your request threw an error; make sure your request complies with the expected format:\n"

@@ -283,7 +283,7 @@ def finetune(cfg: FinetuneConfig) -> None:
                     input_ids=batch["input_ids"].to(device_id),
                     attention_mask=batch["attention_mask"].to(device_id),
                     pixel_values=batch["pixel_values"].to(torch.bfloat16).to(device_id),
-                    labels=batch["labels"],
+                    labels=batch["labels"].to(device_id),
                 )
                 loss = output.loss
 

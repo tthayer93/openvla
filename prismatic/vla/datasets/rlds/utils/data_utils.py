@@ -322,6 +322,8 @@ def allocate_threads(n: Optional[int], weights: np.ndarray):
 
         # Recompute the distribution over the remaining elements
         weights[mask] = 0
+        if weights.sum() == 0:
+            break
         weights = weights / weights.sum()
 
     # Allocate the remaining elements
