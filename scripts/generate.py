@@ -8,6 +8,9 @@ Run with: python scripts/generate.py --model_path <PATH TO LOCAL MODEL OR HF HUB
 """
 
 import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union

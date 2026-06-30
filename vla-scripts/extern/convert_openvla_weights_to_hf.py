@@ -17,6 +17,9 @@ Usage:
 import json
 import os
 import shutil
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Union

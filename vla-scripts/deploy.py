@@ -27,7 +27,9 @@ Note that if your server is not accessible on the open web, you can use ngrok, o
     => `ssh -L 8000:localhost:8000 ssh USER@<SERVER_IP>`
 """
 
-import os.path
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # ruff: noqa: E402
 import json_numpy

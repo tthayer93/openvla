@@ -19,6 +19,9 @@ Usage:
 
 import os
 import sys
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
