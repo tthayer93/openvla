@@ -496,7 +496,7 @@ MODEL_REGISTRY = {
         }
     },
     "prism-siglip-controlled+13b": {
-        "model_id": "prism-siglip-controlled+7b",
+        "model_id": "prism-siglip-controlled+13b",
         "names": ["Prism-SigLIP 13B (Controlled)"],
         "description": {
             "name": "SigLIP Prism 13B (Controlled)",

@@ -421,7 +421,7 @@ class Prism_7B_SigLIP(Exp_7B_One_Stage):
 @dataclass
 class Prism_13B_SigLIP(Exp_13B_One_Stage):
     model_id: str = "prism-siglip+13b"
-    vision_backbone_id: str = "clip-vit-l-336px"
+    vision_backbone_id: str = "siglip-vit-so400m-384px"
     image_resize_strategy: str = "resize-naive"
     llm_backbone_id: str = "llama2-13b-pure"
     finetune_epochs: int = 2
