@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+import numpy as np
 import draccus
 import torch
 import uvicorn
@@ -109,13 +110,13 @@ class OpenVLAServer:
             image, instruction = payload["image"], payload["instruction"]
             unnorm_key = payload.get("unnorm_key", None)
 
+            # Process inputs through the HF processor (image may be a list from JSON)
+            prompt = get_openvla_prompt(instruction, self.openvla_path)
+            image_array = np.asarray(image).astype(np.uint8) if not isinstance(image, Image.Image) else np.array(image)
+            inputs = self.processor(prompt, Image.fromarray(image_array).convert("RGB")).to(self.device, dtype=torch.bfloat16)
+
             # Run VLA Inference
-            action = self.vla.predict_action(
-                Image.fromarray(image).convert("RGB"),
-                instruction,
-                unnorm_key=unnorm_key,
-                do_sample=False,
-            )
+            action = self.vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
             if double_encode:
                 return JSONResponse(json_numpy.dumps(action))
             else:
