@@ -374,7 +374,11 @@ def finetune(cfg: FinetuneConfig) -> None:
                 # Merge LoRA weights into model backbone for faster inference
                 #   =>> Note that merging is slow and can be done post-hoc to speed up training
                 if cfg.use_lora:
-                    merged_vla = vla.module.merge_and_unload()
+                    base_vla = AutoModelForVision2Seq.from_pretrained(
+                        cfg.vla_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, trust_remote_code=True
+                    )
+                    merged_vla = PeftModel.from_pretrained(base_vla, adapter_dir)
+                    merged_vla = merged_vla.merge_and_unload()
                     if distributed_state.is_main_process:
                         if cfg.save_latest_checkpoint_only:
                             # Overwrite latest checkpoint
@@ -411,7 +415,11 @@ def finetune(cfg: FinetuneConfig) -> None:
                     dist.barrier()
 
                     if cfg.use_lora:
-                        merged_vla = vla.module.merge_and_unload()
+                        base_vla = AutoModelForVision2Seq.from_pretrained(
+                            cfg.vla_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, trust_remote_code=True
+                        )
+                        merged_vla = PeftModel.from_pretrained(base_vla, adapter_dir)
+                        merged_vla = merged_vla.merge_and_unload()
                         if cfg.save_latest_checkpoint_only:
                             merged_vla.save_pretrained(run_dir)
                             print(f"Saved final Model Checkpoint for Step {gradient_step_idx} at: {run_dir}")
