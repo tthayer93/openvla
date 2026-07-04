@@ -112,6 +112,7 @@ class FinetuneConfig:
     use_lora: bool = True                                           # Whether to use LoRA fine-tuning
     lora_rank: int = 32                                             # Rank of LoRA weight matrix
     lora_dropout: float = 0.0                                       # Dropout applied to LoRA weights
+    lora_target_modules: str = "all-linear"                         # Preset or comma-separated module names (e.g., "attention", "mlp", "all-linear")
     use_quantization: bool = False                                  # Whether to 4-bit quantize VLA for LoRA fine-tuning
                                                                     #   => CAUTION: Reduces memory but hurts performance
 
@@ -141,7 +142,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         f"+lr-{cfg.learning_rate}"
     )
     if cfg.use_lora:
-        exp_id += f"+lora-r{cfg.lora_rank}+dropout-{cfg.lora_dropout}"
+        exp_id += f"+lora-r{cfg.lora_rank}+dropout-{cfg.lora_dropout}+targets-{cfg.lora_target_modules.replace(',','-')}"
     if cfg.use_quantization:
         exp_id += "+q-4bit"
     if cfg.run_id_note is not None:
@@ -189,11 +190,21 @@ def finetune(cfg: FinetuneConfig) -> None:
 
     # [LoRA] Wrap Model w/ PEFT `LoraConfig` =>> by default we set `target_modules=all-linear`
     if cfg.use_lora:
+        # Expand preset target module names
+        lora_target = cfg.lora_target_modules
+        if lora_target == "attention":
+            lora_target = ["q_proj", "k_proj", "v_proj", "o_proj"]
+        elif lora_target == "mlp":
+            lora_target = ["gate_proj", "up_proj", "down_proj"]
+        elif "," in lora_target:
+            # Comma-separated list of individual module names (e.g., "q_proj,k_proj")
+            lora_target = [m.strip() for m in lora_target.split(",")]
+
         lora_config = LoraConfig(
             r=cfg.lora_rank,
             lora_alpha=min(cfg.lora_rank, 16),
             lora_dropout=cfg.lora_dropout,
-            target_modules="all-linear",
+            target_modules=lora_target,
             init_lora_weights="gaussian",
         )
         vla = get_peft_model(base_vla, lora_config)
