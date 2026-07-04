@@ -57,6 +57,13 @@ from prismatic.extern.hf.processing_prismatic import PrismaticImageProcessor, Pr
 # Sane Defaults
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# Enable TF32 for faster matmuls on Ampere+ GPUs
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cuda.matmul.allow_tf32 = True
+
+# cuDNN benchmark - picks optimal algorithm once and caches it (safe with fixed batch sizes)
+torch.backends.cudnn.benchmark = True
+
 
 # # === Utilities ===
 # # fmt: off
@@ -94,6 +101,7 @@ class FinetuneConfig:
     save_steps: int = 5000                                          # Interval for checkpoint saving
     learning_rate: float = 5e-4                                     # Fine-tuning learning rate
     grad_accumulation_steps: int = 1                                # Gradient accumulation steps
+    use_gradient_checkpointing: bool = False                        # Trade VRAM for ~20% slower steps; enable if OOM
     image_aug: bool = True                                          # Whether to train with image augmentations
     shuffle_buffer_size: int = 100_000                              # Dataloader shuffle buffer size (can reduce if OOM)
     save_latest_checkpoint_only: bool = True                        # Whether to save only one checkpoint per run and
@@ -170,8 +178,8 @@ def finetune(cfg: FinetuneConfig) -> None:
         attn_implementation="flash_attention_2",
     )
 
-    # Enable gradient checkpointing to save VRAM at the cost of re-computing activations
-    base_vla.gradient_checkpointing_enable()
+    if cfg.use_gradient_checkpointing:
+        base_vla.gradient_checkpointing_enable()
 
     # Device Placement =>> note that BitsAndBytes automatically handles for quantized training
     if cfg.use_quantization:
@@ -193,12 +201,13 @@ def finetune(cfg: FinetuneConfig) -> None:
 
     # Wrap VLA in PyTorch DDP Wrapper for Multi-GPU Training
     if cfg.use_lora:
-        vla = DDP(vla, device_ids=[device_id], find_unused_parameters=True, gradient_as_bucket_view=True)
+        vla = DDP(vla, device_ids=[device_id], find_unused_parameters=True)
     else:
-        vla = DDP(base_vla, device_ids=[device_id], find_unused_parameters=True, gradient_as_bucket_view=True)
+        vla = DDP(base_vla, device_ids=[device_id], find_unused_parameters=True)
 
     # Enable static graph for compatibility with gradient checkpointing + DDP
-    vla._set_static_graph()
+    if cfg.use_gradient_checkpointing:
+        vla._set_static_graph()
 
     # Create Optimizer =>> note that we default to a simple constant learning rate!
     trainable_params = [param for param in vla.parameters() if param.requires_grad]
@@ -251,6 +260,7 @@ def finetune(cfg: FinetuneConfig) -> None:
         sampler=None,
         collate_fn=collator,
         num_workers=0,  # Important =>> Set to 0 if using RLDS; TFDS rolls its own parallelism!
+        pin_memory=True,
     )
 
     # Initialize Logging =>> W&B and CSV
@@ -287,11 +297,11 @@ def finetune(cfg: FinetuneConfig) -> None:
         optimizer.zero_grad()
         for batch_idx, batch in enumerate(dataloader):
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                output: CausalLMOutputWithPast = vla(
-                    input_ids=batch["input_ids"].to(device_id),
-                    attention_mask=batch["attention_mask"].to(device_id),
-                    pixel_values=batch["pixel_values"].to(torch.bfloat16).to(device_id),
-                    labels=batch["labels"].to(device_id),
+                output = vla(
+                    input_ids=batch["input_ids"].to(device_id, non_blocking=True),
+                    attention_mask=batch["attention_mask"].to(device_id, non_blocking=True),
+                    pixel_values=batch["pixel_values"].to(torch.bfloat16).to(device_id, non_blocking=True),
+                    labels=batch["labels"].to(device_id, non_blocking=True),
                 )
                 loss = output.loss
 
@@ -301,64 +311,52 @@ def finetune(cfg: FinetuneConfig) -> None:
             # Backward pass
             normalized_loss.backward()
 
-            # Compute Accuracy and L1 Loss for Logging (detach to break graph refs early)
-            action_logits = output.logits[:, vla.module.vision_backbone.featurizer.patch_embed.num_patches : -1].detach()
-            action_preds = action_logits.argmax(dim=2).cpu()
-            action_gt_cpu = batch["labels"][:, 1:].cpu()
-            mask = action_gt_cpu > action_tokenizer.action_token_begin_idx
+            # Only compute action accuracy, L1 loss, and loss scalar at logging intervals (these are for metrics only)
+            if distributed_state.is_main_process and gradient_step_idx % cfg.log_freq == 0:
+                recent_losses.append(loss.item())
+                # Compute Accuracy and L1 Loss for Logging (detach to break graph refs early)
+                action_logits = output.logits[:, vla.module.vision_backbone.featurizer.patch_embed.num_patches : -1].detach()
+                action_preds = action_logits.argmax(dim=2).cpu()
+                action_gt_cpu = batch["labels"][:, 1:].cpu()
+                mask = action_gt_cpu > action_tokenizer.action_token_begin_idx
 
-            # Compute Accuracy
-            correct_preds = (action_preds == action_gt_cpu) & mask
-            mask_sum = mask.sum().float()
-            if mask_sum > 0:
-                action_accuracy = correct_preds.sum().float() / mask_sum
-            else:
-                action_accuracy = torch.tensor(0.0)
+                # Compute Accuracy
+                correct_preds = (action_preds == action_gt_cpu) & mask
+                mask_sum = mask.sum().float()
+                if mask_sum > 0:
+                    action_accuracy = correct_preds.sum().float() / mask_sum
+                else:
+                    action_accuracy = torch.tensor(0.0)
 
-            # Compute L1 Loss on Predicted (Continuous) Actions
-            continuous_actions_pred = torch.tensor(
-                action_tokenizer.decode_token_ids_to_actions(action_preds[mask].numpy())
-            )
-            continuous_actions_gt = torch.tensor(
-                action_tokenizer.decode_token_ids_to_actions(action_gt_cpu[mask].numpy())
-            )
-            action_l1_loss = torch.nn.functional.l1_loss(continuous_actions_pred, continuous_actions_gt)
+                # Compute L1 Loss on Predicted (Continuous) Actions
+                continuous_actions_pred = torch.tensor(
+                    action_tokenizer.decode_token_ids_to_actions(action_preds[mask].numpy())
+                )
+                continuous_actions_gt = torch.tensor(
+                    action_tokenizer.decode_token_ids_to_actions(action_gt_cpu[mask].numpy())
+                )
+                action_l1_loss = torch.nn.functional.l1_loss(continuous_actions_pred, continuous_actions_gt)
 
-            # Free forward/backward intermediates to break graph refs early
-            del output, normalized_loss, action_logits
-
-            # Store recent train metrics
-            recent_losses.append(loss.item())
-            recent_action_accuracies.append(action_accuracy.item())
-            recent_l1_losses.append(action_l1_loss.item())
-
-            # Compute smoothened train metrics
-            #   =>> Equal to current step metrics when not using gradient accumulation
-            #   =>> Otherwise, equal to the average of metrics observed over micro-batches used for gradient accumulation
-            smoothened_loss = sum(recent_losses) / len(recent_losses)
-            smoothened_action_accuracy = sum(recent_action_accuracies) / len(recent_action_accuracies)
-            smoothened_l1_loss = sum(recent_l1_losses) / len(recent_l1_losses)
+                recent_action_accuracies.append(action_accuracy.item())
+                recent_l1_losses.append(action_l1_loss.item())
+                smoothened_loss = sum(recent_losses) / len(recent_losses)
 
             # Push Metrics to W&B or write CSV log
             if distributed_state.is_main_process and gradient_step_idx % cfg.log_freq == 0:
+                metrics_to_log = {"train_loss": smoothened_loss}
+
+                if recent_action_accuracies:
+                    smoothened_action_accuracy = sum(recent_action_accuracies) / len(recent_action_accuracies)
+                    smoothened_l1_loss = sum(recent_l1_losses) / len(recent_l1_losses)
+                    metrics_to_log["action_accuracy"] = smoothened_action_accuracy
+                    metrics_to_log["l1_loss"] = smoothened_l1_loss
+
                 if _wandb_enabled:
-                    wandb.log(
-                        {
-                            "train_loss": smoothened_loss,
-                            "action_accuracy": smoothened_action_accuracy,
-                            "l1_loss": smoothened_l1_loss,
-                        },
-                        step=gradient_step_idx,
-                    )
+                    wandb.log(metrics_to_log, step=gradient_step_idx)
                 if cfg.csv_logging:
                     with open(run_dir / "log.csv", "a") as csvf:
                         writer = csv.writer(csvf)
-                        writer.writerow([
-                            gradient_step_idx,
-                            smoothened_loss,
-                            smoothened_action_accuracy,
-                            smoothened_l1_loss,
-                        ])
+                        writer.writerow([gradient_step_idx] + [metrics_to_log.get(k, 0.0) for k in ["train_loss", "action_accuracy", "l1_loss"]])
 
             # Promoter Step (every grad accumulation steps)
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
