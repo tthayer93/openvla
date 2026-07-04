@@ -317,9 +317,8 @@ def finetune(cfg: FinetuneConfig) -> None:
             )
             action_l1_loss = torch.nn.functional.l1_loss(continuous_actions_pred, continuous_actions_gt)
 
-            # Free forward/backward intermediates immediately
+            # Free forward/backward intermediates to break graph refs early
             del output, normalized_loss, action_logits
-            torch.cuda.empty_cache()
 
             # Store recent train metrics
             recent_losses.append(loss.item())
