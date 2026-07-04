@@ -167,7 +167,11 @@ def finetune(cfg: FinetuneConfig) -> None:
         quantization_config=quantization_config,
         low_cpu_mem_usage=True,
         trust_remote_code=True,
+        attn_implementation="flash_attention_2",
     )
+
+    # Enable gradient checkpointing to save VRAM at the cost of re-computing activations
+    base_vla.gradient_checkpointing_enable()
 
     # Device Placement =>> note that BitsAndBytes automatically handles for quantized training
     if cfg.use_quantization:
@@ -192,6 +196,9 @@ def finetune(cfg: FinetuneConfig) -> None:
         vla = DDP(vla, device_ids=[device_id], find_unused_parameters=True, gradient_as_bucket_view=True)
     else:
         vla = DDP(base_vla, device_ids=[device_id], find_unused_parameters=True, gradient_as_bucket_view=True)
+
+    # Enable static graph for compatibility with gradient checkpointing + DDP
+    vla._set_static_graph()
 
     # Create Optimizer =>> note that we default to a simple constant learning rate!
     trainable_params = [param for param in vla.parameters() if param.requires_grad]
