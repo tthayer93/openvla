@@ -387,6 +387,14 @@ def finetune(cfg: FinetuneConfig) -> None:
     # Merge LoRA weights into model backbone post-hoc
     if cfg.use_lora and distributed_state.is_main_process:
         print("Merging LoRA weights into base model...")
+        # Free everything from training to avoid OOM — without this, we'd have the full
+        # training model + optimizer state + fresh base model + merged model all in memory.
+        del vla, optimizer, dataloader, vla_dataset
+        torch.cuda.empty_cache()
+
+        import gc
+        gc.collect()
+
         base_vla = AutoModelForVision2Seq.from_pretrained(
             cfg.vla_path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, trust_remote_code=True
         )
