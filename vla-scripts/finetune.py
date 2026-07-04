@@ -19,6 +19,7 @@ Run with:
                                     ...
 """
 
+import gc
 import os
 from collections import deque
 from dataclasses import dataclass
@@ -293,28 +294,32 @@ def finetune(cfg: FinetuneConfig) -> None:
             # Backward pass
             normalized_loss.backward()
 
-            # Compute Accuracy and L1 Loss for Logging
-            action_logits = output.logits[:, vla.module.vision_backbone.featurizer.patch_embed.num_patches : -1]
-            action_preds = action_logits.argmax(dim=2)
-            action_gt = batch["labels"][:, 1:].to(action_preds.device)
-            mask = action_gt > action_tokenizer.action_token_begin_idx
+            # Compute Accuracy and L1 Loss for Logging (detach to break graph refs early)
+            action_logits = output.logits[:, vla.module.vision_backbone.featurizer.patch_embed.num_patches : -1].detach()
+            action_preds = action_logits.argmax(dim=2).cpu()
+            action_gt_cpu = batch["labels"][:, 1:].cpu()
+            mask = action_gt_cpu > action_tokenizer.action_token_begin_idx
 
             # Compute Accuracy
-            correct_preds = (action_preds == action_gt) & mask
+            correct_preds = (action_preds == action_gt_cpu) & mask
             mask_sum = mask.sum().float()
             if mask_sum > 0:
                 action_accuracy = correct_preds.sum().float() / mask_sum
             else:
-                action_accuracy = torch.tensor(0.0, device=correct_preds.device)
+                action_accuracy = torch.tensor(0.0)
 
             # Compute L1 Loss on Predicted (Continuous) Actions
             continuous_actions_pred = torch.tensor(
-                action_tokenizer.decode_token_ids_to_actions(action_preds[mask].cpu().numpy())
+                action_tokenizer.decode_token_ids_to_actions(action_preds[mask].numpy())
             )
             continuous_actions_gt = torch.tensor(
-                action_tokenizer.decode_token_ids_to_actions(action_gt[mask].cpu().numpy())
+                action_tokenizer.decode_token_ids_to_actions(action_gt_cpu[mask].numpy())
             )
             action_l1_loss = torch.nn.functional.l1_loss(continuous_actions_pred, continuous_actions_gt)
+
+            # Free forward/backward intermediates immediately
+            del output, normalized_loss, action_logits
+            torch.cuda.empty_cache()
 
             # Store recent train metrics
             recent_losses.append(loss.item())
@@ -369,6 +374,8 @@ def finetune(cfg: FinetuneConfig) -> None:
                     vla.module.save_pretrained(save_dir)
 
                 dist.barrier()
+                # Force GC at checkpoint boundaries to prevent system RAM leaks during long runs
+                gc.collect()
 
             # Stop training when max_steps is reached
             if gradient_step_idx == cfg.max_steps:
@@ -391,8 +398,6 @@ def finetune(cfg: FinetuneConfig) -> None:
         # training model + optimizer state + fresh base model + merged model all in memory.
         del vla, optimizer, dataloader, vla_dataset
         torch.cuda.empty_cache()
-
-        import gc
         gc.collect()
 
         base_vla = AutoModelForVision2Seq.from_pretrained(
