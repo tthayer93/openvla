@@ -32,7 +32,7 @@ class PaddedCollatorForLanguageModeling:
     pad_token_id: int
     default_image_resolution: Tuple[int, int, int]
     padding_side: str = "right"
-    pixel_values_dtype: torch.dtype = torch.float32
+    pixel_values_dtype: torch.dtype = torch.bfloat16
 
     def __post_init__(self) -> None:
         self.dummy_pixel_values = torch.zeros(self.default_image_resolution, dtype=self.pixel_values_dtype)
@@ -96,15 +96,11 @@ class PaddedCollatorForActionPrediction:
     model_max_length: int
     pad_token_id: int
     padding_side: str = "right"
-    pixel_values_dtype: torch.dtype = torch.float32
+    pixel_values_dtype: torch.dtype = torch.bfloat16
 
     def __call__(self, instances: Sequence[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
         pixel_values = [instance["pixel_values"] for instance in instances]
-        if "dataset_name" in instances[0]:
-            dataset_names = [instance["dataset_name"] for instance in instances]
-        else:
-            dataset_names = None
 
         # For now, we only support Tokenizers with `padding_side = "right"` during training
         #   => Handle padding via RNN Utils => `pad_sequence`
@@ -131,12 +127,9 @@ class PaddedCollatorForActionPrediction:
         else:
             raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_values)}")
 
-        output = dict(
+        return dict(
             pixel_values=pixel_values,
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels,
         )
-        if dataset_names is not None:
-            output["dataset_names"] = dataset_names
-        return output

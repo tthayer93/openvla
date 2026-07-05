@@ -311,7 +311,7 @@ def finetune(cfg: FinetuneConfig) -> None:
                 output = vla(
                     input_ids=batch["input_ids"].to(device_id, non_blocking=True),
                     attention_mask=batch["attention_mask"].to(device_id, non_blocking=True),
-                    pixel_values=batch["pixel_values"].to(torch.bfloat16).to(device_id, non_blocking=True),
+                    pixel_values=batch["pixel_values"].to(device_id, non_blocking=True),
                     labels=batch["labels"].to(device_id, non_blocking=True),
                 )
                 loss = output.loss
