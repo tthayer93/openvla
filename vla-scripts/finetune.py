@@ -227,6 +227,10 @@ def finetune(cfg: FinetuneConfig) -> None:
     # Create Action Tokenizer
     action_tokenizer = ActionTokenizer(processor.tokenizer)
 
+    # Pre-compute tensors for action decoding (avoids numpy allocation during training loop)
+    _action_bin_centers = torch.tensor(action_tokenizer.bin_centers, dtype=torch.float32)
+    _action_vocab_size = action_tokenizer.llm_vocab_size
+
     # Load Fine-tuning Dataset =>> note that we use an RLDS-formatted dataset following Open X-Embodiment by default.
     #   =>> If you want to use a non-RLDS dataset (e.g., a standard PyTorch Dataset) see the following commented block.
     #   =>> Note that our training code does not loop over epochs because the RLDS loader does this implicitly; if using
@@ -288,11 +292,12 @@ def finetune(cfg: FinetuneConfig) -> None:
         print("Metrics below would be written to W&B:")
         print('='*60)
 
-    # Initialize CSV logging
+    # Initialize CSV logging — keep file handle open for the duration of training
+    _csv_f, csv_writer = None, None
     if cfg.csv_logging and distributed_state.is_main_process:
-        with open(run_dir / "log.csv", "w") as f:
-            writer = csv.writer(f)
-            writer.writerow(["gradient_step", "train_loss", "action_accuracy", "l1_loss"])
+        _csv_f = open(run_dir / "log.csv", "w")
+        csv_writer = csv.writer(_csv_f)
+        csv_writer.writerow(["gradient_step", "train_loss", "action_accuracy", "l1_loss"])
 
     # Deque to store recent train metrics (used for computing smoothened metrics for gradient accumulation)
     recent_losses = deque(maxlen=cfg.grad_accumulation_steps)
@@ -324,33 +329,34 @@ def finetune(cfg: FinetuneConfig) -> None:
 
             # Only compute action accuracy, L1 loss, and loss scalar at logging intervals (these are for metrics only)
             if distributed_state.is_main_process and gradient_step_idx % cfg.log_freq == 0:
-                recent_losses.append(loss.item())
-                # Compute Accuracy and L1 Loss for Logging (detach to break graph refs early)
-                action_logits = output.logits[:, vla.module.vision_backbone.featurizer.patch_embed.num_patches : -1].detach()
-                action_preds = action_logits.argmax(dim=2).cpu()
-                action_gt_cpu = batch["labels"][:, 1:].cpu()
-                mask = action_gt_cpu > action_tokenizer.action_token_begin_idx
+                with torch.no_grad():
+                    recent_losses.append(loss.item())
+                    # Compute Accuracy and L1 Loss for Logging (detach to break graph refs early)
+                    action_logits = output.logits[:, vla.module.vision_backbone.featurizer.patch_embed.num_patches : -1].detach()
+                    action_preds = action_logits.argmax(dim=2).cpu()
+                    action_gt_cpu = batch["labels"][:, 1:].cpu()
+                    mask = action_gt_cpu > action_tokenizer.action_token_begin_idx
 
-                # Compute Accuracy
-                correct_preds = (action_preds == action_gt_cpu) & mask
-                mask_sum = mask.sum().float()
-                if mask_sum > 0:
-                    action_accuracy = correct_preds.sum().float() / mask_sum
-                else:
-                    action_accuracy = torch.tensor(0.0)
+                    # Compute Accuracy
+                    correct_preds = (action_preds == action_gt_cpu) & mask
+                    mask_sum = mask.sum().float()
+                    if mask_sum > 0:
+                        action_accuracy = correct_preds.sum().float() / mask_sum
+                    else:
+                        action_accuracy = torch.tensor(0.0)
 
-                # Compute L1 Loss on Predicted (Continuous) Actions
-                continuous_actions_pred = torch.tensor(
-                    action_tokenizer.decode_token_ids_to_actions(action_preds[mask].numpy())
-                )
-                continuous_actions_gt = torch.tensor(
-                    action_tokenizer.decode_token_ids_to_actions(action_gt_cpu[mask].numpy())
-                )
-                action_l1_loss = torch.nn.functional.l1_loss(continuous_actions_pred, continuous_actions_gt)
+                    # Compute L1 Loss on Predicted (Continuous) Actions — GPU-native decode, no CPU round-trip
+                    discretized_pred = _action_vocab_size - action_preds[mask]
+                    discretized_gt = _action_vocab_size - action_gt_cpu[mask]
+                    bin_idx_pred = torch.clamp(discretized_pred - 1, 0, _action_bin_centers.numel() - 1)
+                    bin_idx_gt = torch.clamp(discretized_gt - 1, 0, _action_bin_centers.numel() - 1)
+                    continuous_actions_pred = _action_bin_centers[bin_idx_pred]
+                    continuous_actions_gt = _action_bin_centers[bin_idx_gt]
+                    action_l1_loss = torch.nn.functional.l1_loss(continuous_actions_pred, continuous_actions_gt)
 
-                recent_action_accuracies.append(action_accuracy.item())
-                recent_l1_losses.append(action_l1_loss.item())
-                smoothened_loss = sum(recent_losses) / len(recent_losses)
+                    recent_action_accuracies.append(action_accuracy.item())
+                    recent_l1_losses.append(action_l1_loss.item())
+                    smoothened_loss = sum(recent_losses) / len(recent_losses)
 
             # Push Metrics to W&B or write CSV log
             if distributed_state.is_main_process and gradient_step_idx % cfg.log_freq == 0:
@@ -364,10 +370,8 @@ def finetune(cfg: FinetuneConfig) -> None:
 
                 if _wandb_enabled:
                     wandb.log(metrics_to_log, step=gradient_step_idx)
-                if cfg.csv_logging:
-                    with open(run_dir / "log.csv", "a") as csvf:
-                        writer = csv.writer(csvf)
-                        writer.writerow([gradient_step_idx] + [metrics_to_log.get(k, 0.0) for k in ["train_loss", "action_accuracy", "l1_loss"]])
+                if csv_writer is not None:
+                    csv_writer.writerow([gradient_step_idx] + [metrics_to_log.get(k, 0.0) for k in ["train_loss", "action_accuracy", "l1_loss"]])
 
             # Promoter Step (every grad accumulation steps)
             if (batch_idx + 1) % cfg.grad_accumulation_steps == 0:
@@ -405,6 +409,10 @@ def finetune(cfg: FinetuneConfig) -> None:
                 dist.barrier()
 
                 break
+
+    # Close CSV log file if open
+    if _csv_f is not None:
+        _csv_f.close()
 
     # Merge LoRA weights into model backbone post-hoc
     if cfg.use_lora and distributed_state.is_main_process:

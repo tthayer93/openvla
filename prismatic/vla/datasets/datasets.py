@@ -50,13 +50,12 @@ class RLDSBatchTransform:
         for turn in conversation:
             prompt_builder.add_turn(turn["from"], turn["value"])
 
-        # Tokenize (w/ `base_tokenizer`)
-        input_ids = self.base_tokenizer(prompt_builder.get_prompt(), add_special_tokens=True).input_ids
-        labels = list(input_ids)
+        # Tokenize (w/ `base_tokenizer`) and tensorize in one step
+        input_ids = torch.tensor(self.base_tokenizer(prompt_builder.get_prompt(), add_special_tokens=True).input_ids)
+        labels = input_ids.clone()
 
-        # Tensorize =>> Run Image Transform to get `pixel_values` =>> Return
+        # Run Image Transform to get `pixel_values` =>> Return
         #   =>> IMPORTANT :: IF WE'RE USING HF LLM.forward(..., labels=labels), SHIFTING HAPPENS _INSIDE_ MODEL!
-        input_ids, labels = torch.tensor(input_ids), torch.tensor(labels)
         pixel_values = self.image_transform(img)
 
         # [CRITICAL] We do not want to take the loss for anything but the predicted action tokens!
