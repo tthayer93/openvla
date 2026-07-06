@@ -17,6 +17,7 @@ Terminology
     -> Local Rank :: Local index on given node in [0, Devices per Node]
 """
 
+import functools
 import os
 import random
 from typing import Callable, Optional
@@ -77,6 +78,7 @@ def worker_init_function(worker_id: int) -> None:
 # === BFloat16 Support ===
 
 
+@functools.lru_cache(maxsize=1)
 def check_bloat16_supported() -> bool:
     try:
         import packaging.version

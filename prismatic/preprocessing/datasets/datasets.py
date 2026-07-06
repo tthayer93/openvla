@@ -9,7 +9,6 @@ We currently only support Map-style Datasets; assumes that all files (annotation
 random access image reading is relatively cheap/fast.
 """
 
-import copy
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Type
@@ -78,7 +77,7 @@ class AlignDataset(Dataset[Dict[str, torch.Tensor]]):
         #
         # IMPORTANT => IF WE'RE USING HF LLM.forward(... labels=labels), SHIFTING HAPPENS _INSIDE_ MODEL!
         input_ids = self.tokenizer(caption, truncation=True, return_tensors="pt").input_ids[0]
-        labels = copy.deepcopy(input_ids)
+        labels = input_ids.clone()
 
         # Set the <BOS> token's label to IGNORE_INDEX (since we're inserting the image patches right after)
         labels[0] = IGNORE_INDEX

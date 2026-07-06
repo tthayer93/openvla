@@ -62,25 +62,27 @@ class PaddedCollatorForLanguageModeling:
         # Stack all `pixel_values` --> depending on type (torch.Tensor, or Dict[str, torch.Tensor]) & presence of None
         if len(multimodal_indices) == 0:
             pixel_values = torch.stack([self.dummy_pixel_values for _ in range(len(input_ids))])
-        elif isinstance(pv_example := pixel_values[multimodal_indices[0]], torch.Tensor):
-            pixel_values = torch.stack(
-                [
-                    pixel_values[idx] if idx in multimodal_indices else self.dummy_pixel_values
-                    for idx in range(len(input_ids))
-                ]
-            )
-        elif isinstance(pv_example, dict):
-            pixel_values = {
-                k: torch.stack(
+        else:
+            multimodal_set = set(multimodal_indices.tolist())
+            if isinstance(pv_example := pixel_values[multimodal_indices[0]], torch.Tensor):
+                pixel_values = torch.stack(
                     [
-                        pixel_values[idx][k] if idx in multimodal_indices else self.dummy_pixel_values
+                        pixel_values[idx] if idx in multimodal_set else self.dummy_pixel_values
                         for idx in range(len(input_ids))
                     ]
                 )
-                for k in pv_example
-            }
-        else:
-            raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_values)}")
+            elif isinstance(pv_example, dict):
+                pixel_values = {
+                    k: torch.stack(
+                        [
+                            pixel_values[idx][k] if idx in multimodal_set else self.dummy_pixel_values
+                            for idx in range(len(input_ids))
+                        ]
+                    )
+                    for k in pv_example
+                }
+            else:
+                raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_values)}")
 
         return dict(
             pixel_values=pixel_values,

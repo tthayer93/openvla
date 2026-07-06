@@ -503,6 +503,9 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         # Compute vocab size for de-tokenization -- revert added "multiple of"
         self.vocab_size = self.config.text_config.vocab_size - self.config.pad_to_multiple_of
 
+        # Pre-allocate constant empty token tensor (avoids per-call allocation in predict_action)
+        self._empty_token = torch.tensor([[29871]], dtype=torch.long)
+
     def predict_action(
         self, input_ids: Optional[torch.LongTensor] = None, unnorm_key: Optional[str] = None, **kwargs: str
     ) -> np.ndarray:
@@ -511,14 +514,15 @@ class OpenVLAForActionPrediction(PrismaticForConditionalGeneration):
         # (after "OUT:" or "ASSISTANT:"), insert it to match the inputs seen at training time
         if not torch.all(input_ids[:, -1] == 29871):
             input_ids = torch.cat(
-                (input_ids, torch.unsqueeze(torch.Tensor([29871]).long(), dim=0).to(input_ids.device)), dim=1
+                (input_ids, self._empty_token.to(input_ids.device)), dim=1
             )
 
-        # Run VLA inference
-        generated_ids = self.generate(input_ids, max_new_tokens=self.get_action_dim(unnorm_key), **kwargs)
+        # Run VLA inference — cache action_dim to avoid repeated dict lookups
+        action_dim = self.get_action_dim(unnorm_key)
+        generated_ids = self.generate(input_ids, max_new_tokens=action_dim, **kwargs)
 
         # Extract predicted action tokens and translate into (normalized) continuous actions
-        predicted_action_token_ids = generated_ids[0, -self.get_action_dim(unnorm_key) :].cpu().numpy()
+        predicted_action_token_ids = generated_ids[0, -action_dim:].cpu().numpy()
         discretized_actions = self.vocab_size - predicted_action_token_ids
         discretized_actions = np.clip(discretized_actions - 1, a_min=0, a_max=self.bin_centers.shape[0] - 1)
         normalized_actions = self.bin_centers[discretized_actions]
