@@ -544,12 +544,13 @@ class PrismaticVLM(VLM):
 
         # Invoke super().generate --> taps into `GenerationMixin` which (redirects) to `forward()`
         autocast_dtype = self.llm_backbone.half_precision_dtype
+        batched_pixel_values = pixel_values
         with torch.autocast("cuda", dtype=autocast_dtype, enabled=self.enable_mixed_precision_training):
             for idx, input_ids in enumerate(batch_input_ids):
-                if isinstance(pixel_values, torch.Tensor):
-                    pixel_values = pixel_values[idx]
-                elif isinstance(pixel_values, dict):
-                    pixel_values = {k: pixel_values[k][idx] for k in pixel_values}
+                if isinstance(batched_pixel_values, torch.Tensor):
+                    pixel_values = batched_pixel_values[idx]
+                elif isinstance(batched_pixel_values, dict):
+                    pixel_values = {k: v[idx] for k, v in batched_pixel_values.items()}
                 else:
                     raise ValueError(f"Unsupported `pixel_values` type = {type(pixel_values)}")
 

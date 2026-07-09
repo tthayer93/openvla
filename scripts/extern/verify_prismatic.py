@@ -4,6 +4,10 @@ verify_prismatic.py
 Given an HF-exported Prismatic model, attempt to load via AutoClasses, and verify forward() and generate().
 """
 
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import time
 
 import requests

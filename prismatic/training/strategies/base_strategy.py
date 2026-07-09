@@ -83,6 +83,12 @@ class TrainingStrategy(ABC):
             self.global_batch_size % self.per_device_batch_size == 0
         ), "Per-device batch size must evenly divide global batch size!"
         self.grad_accumulation_steps = self.global_batch_size // self.per_device_batch_size // overwatch.world_size()
+        if self.grad_accumulation_steps != 1:
+            raise ValueError(
+                f"Gradient accumulation with {self.grad_accumulation_steps} steps is not supported for VLA training. "
+                f"To avoid this, set your config so that global_batch_size / per_device_batch_size / (world_size={overwatch.world_size()}) == 1. "
+                f"For example, with world_size={overwatch.world_size()}, use global_batch_size={self.per_device_batch_size * overwatch.world_size()}."
+            )
         if self.enable_mixed_precision_training:
             assert self.mixed_precision_dtype == torch.bfloat16, "Only BF16 mixed precision training is supported!"
             assert check_bloat16_supported(), "BFloat16 is not supported on this hardware; unset `mixed_precision`"
@@ -253,7 +259,6 @@ class TrainingStrategy(ABC):
     ) -> None:
         """Run the VLA training loop for the given `dataset` and `collator`; log losses, action metrics to `metrics`."""
         assert isinstance(vla_dataset, IterableDataset), "VLA training expects an IterableDataset!"
-        assert self.grad_accumulation_steps == 1, "VLA training does not support gradient accumulation!"
 
         # Create a DataLoader =>> Set `num_workers` to 0; RLDS loader handles parallelism!
         dataloader = DataLoader(
@@ -277,6 +282,8 @@ class TrainingStrategy(ABC):
 
             # Zero Gradients (just in case)
             self.optimizer.zero_grad()
+
+            any_steps_completed = False
 
             # [Contract] DataLoader wraps RLDS Loader (`.as_numpy_iterator() =>> implicit `.repeat()`)
             #   => This means looping over the DataLoader is basically "infinite" (so no outer loop over epochs).
@@ -333,10 +340,19 @@ class TrainingStrategy(ABC):
 
                 # Compute metrics per dataset --> only on rank_zero since we don't log them on other workers anyways
                 if overwatch.is_rank_zero():
-                    datasets = set(batch["dataset_names"])
+                    datasets = set()
+                    for elem in batch["dataset_names"]:
+                        try:
+                            datasets.add(elem.decode("utf-8"))
+                        except UnicodeDecodeError:
+                            datasets.add(str(elem))
                     if len(datasets) > 1:
-                        for ds in datasets:
-                            ds_mask = torch.tensor([elem == ds for elem in batch["dataset_names"]])
+                        for ds in list(datasets):
+                            try:
+                                search_key = ds.encode("utf-8")
+                            except UnicodeEncodeError:
+                                search_key = str(ds).encode("latin-1")
+                            ds_mask = torch.tensor([elem == search_key for elem in batch["dataset_names"]])
                             action_accuracy_ds = correct_preds[ds_mask].sum().float() / mask[ds_mask].sum().float()
                             continuous_actions_pred_ds = torch.tensor(
                                 action_tokenizer.decode_token_ids_to_actions(
@@ -352,7 +368,7 @@ class TrainingStrategy(ABC):
                                 continuous_actions_pred_ds, continuous_actions_gt_ds
                             )
                             metrics.commit_for_dataset(
-                                dataset_name=ds.decode(), action_accuracy=action_accuracy_ds, l1_loss=action_l1_loss_ds
+                                dataset_name=ds, action_accuracy=action_accuracy_ds, l1_loss=action_l1_loss_ds
                             )
 
                 # === Gradient Step ===
@@ -364,9 +380,13 @@ class TrainingStrategy(ABC):
                 self.optimizer.step()
                 self.lr_scheduler.step()
                 self.optimizer.zero_grad()
+                any_steps_completed = True
 
                 # Compute epoch value using number of completed gradient steps
-                epoch = (metrics.global_step + 1) // (len(vla_dataset) // self.global_batch_size)
+                denom = len(vla_dataset) // self.global_batch_size
+                if denom == 0:
+                    denom = 1
+                epoch = (metrics.global_step + 1) // denom
 
                 # Push Metrics
                 metrics.commit(global_step=metrics.global_step + 1, epoch=epoch, lr=self.lr_scheduler.get_last_lr()[0])
@@ -387,3 +407,8 @@ class TrainingStrategy(ABC):
                 # Update Progress Bar
                 progress.update()
                 progress.set_description(status)
+
+        # Save final checkpoint when training completes (VLA dataset exhausted)
+        if any_steps_completed:
+            self.save_checkpoint(metrics.run_dir, metrics.global_step, epoch, loss.item(), only_trainable=not save_full_model)
+            dist.barrier()

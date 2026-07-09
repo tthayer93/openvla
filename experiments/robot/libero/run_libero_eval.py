@@ -19,6 +19,9 @@ Usage:
 
 import os
 import sys
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Union
@@ -255,15 +258,20 @@ def eval_libero(cfg: GenerateConfig) -> None:
             log_file.flush()
 
         # Log final results
-        print(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
-        print(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
-        log_file.write(f"Current task success rate: {float(task_successes) / float(task_episodes)}\n")
-        log_file.write(f"Current total success rate: {float(total_successes) / float(total_episodes)}\n")
+        task_success_rate = float(task_successes) / float(task_episodes) if task_episodes > 0 else 0.0
+        total_success_rate = float(total_successes) / float(total_episodes) if total_episodes > 0 else 0.0
+        print(f"Current task success rate: {task_success_rate}")
+        log_file.write(f"Current task success rate: {task_success_rate}\n")
+        print(f"Current total success rate: {total_success_rate}")
+        if total_episodes > 0:
+            log_file.write(f"Current total success rate: {total_success_rate}\n")
+        else:
+            log_file.write("Current total success rate: N/A (no completed episodes)\n")
         log_file.flush()
         if cfg.use_wandb:
             wandb.log(
                 {
-                    f"success_rate/{task_description}": float(task_successes) / float(task_episodes),
+                    f"success_rate/{task_description}": task_success_rate,
                     f"num_episodes/{task_description}": task_episodes,
                 }
             )
@@ -273,9 +281,10 @@ def eval_libero(cfg: GenerateConfig) -> None:
 
     # Push total metrics and local log file to wandb
     if cfg.use_wandb:
+        total_success_rate = float(total_successes) / float(total_episodes) if total_episodes > 0 else 0.0
         wandb.log(
             {
-                "success_rate/total": float(total_successes) / float(total_episodes),
+                "success_rate/total": total_success_rate,
                 "num_episodes/total": total_episodes,
             }
         )

@@ -17,6 +17,9 @@ Usage:
 import json
 import os
 import shutil
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Union
@@ -167,14 +170,16 @@ def convert_openvla_weights_to_hf(cfg: HFConvertConfig) -> None:
     )
     tokenizer.add_special_tokens({"pad_token": "<PAD>"})
     tokenizer.init_kwargs.pop("add_prefix_space", None)  # Pop to prevent unnecessary warning on reload...
+    
+    # Validate pad_token_id first (before any mutation)
     assert tokenizer.pad_token_id == hf_config.pad_token_id, "Incorrect Pad Token ID!"
     assert len(tokenizer) > hf_config.text_config.vocab_size, "Tokenizer vocabulary must be larger than LLM vocabulary!"
 
     # Patch LLM Config in `hf_config` with vocab_size (+ `hf_config.pad_to_multiple_of`), pad_token_id + validate
+    assert hf_config.text_config.use_cache, "LLM config `use_cache` should be True for inference (set default)!"
     hf_config.text_config.vocab_size += hf_config.pad_to_multiple_of
     hf_config.text_config.pad_token_id = hf_config.pad_token_id
     hf_config.text_config.torch_dtype = torch.bfloat16
-    assert hf_config.text_config.use_cache, "LLM config `use_cache` should be True for inference (set default)!"
 
     # Create Vision Backbone & Transform =>> following `prismatic.models.materialize.get_vision_backbone_and_transform`
     #   =>> Deviates a bit from existing code; as such, explicitly tested in `tests/test_image_transforms.py`

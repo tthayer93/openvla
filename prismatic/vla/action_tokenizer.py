@@ -69,4 +69,10 @@ class ActionTokenizer:
 
     @property
     def vocab_size(self) -> int:
+        """Number of action token bins (not the LLM vocabulary size)."""
         return self.n_bins
+
+    @property
+    def llm_vocab_size(self) -> int:
+        """The underlying LLM tokenizer's vocabulary size."""
+        return self.tokenizer.vocab_size

@@ -4,6 +4,10 @@ verify_openvla.py
 Given an HF-exported OpenVLA model, attempt to load via AutoClasses, and verify forward() and predict_action().
 """
 
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import time
 
 import numpy as np

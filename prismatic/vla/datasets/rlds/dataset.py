@@ -256,7 +256,7 @@ def apply_trajectory_transforms(
     *,
     train: bool,
     goal_relabeling_strategy: Optional[str] = None,
-    goal_relabeling_kwargs: dict = {},
+    goal_relabeling_kwargs: Optional[dict] = None,
     window_size: int = 1,
     future_action_window_size: int = 0,
     subsample_length: Optional[int] = None,
@@ -264,7 +264,7 @@ def apply_trajectory_transforms(
     max_action: Optional[float] = None,
     max_proprio: Optional[float] = None,
     task_augment_strategy: Optional[str] = None,
-    task_augment_kwargs: dict = {},
+    task_augment_kwargs: Optional[dict] = None,
     num_parallel_calls: int = tf.data.AUTOTUNE,
 ) -> dl.DLataset:
     """
@@ -298,6 +298,11 @@ def apply_trajectory_transforms(
             function.
         num_parallel_calls (int, optional): number of parallel calls for map operations. Default to AUTOTUNE.
     """
+    if goal_relabeling_kwargs is None:
+        goal_relabeling_kwargs = {}
+    if task_augment_kwargs is None:
+        task_augment_kwargs = {}
+
     if skip_unlabeled:
         if "language_instruction" not in dataset.element_spec["task"]:
             raise ValueError("skip_unlabeled=True but dataset does not have language labels.")

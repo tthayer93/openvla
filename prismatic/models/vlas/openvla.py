@@ -110,6 +110,11 @@ class OpenVLA(PrismaticVLM):
                 f"options to choose the statistics used for un-normalizing actions: {norm_stats.keys()}"
             )
             unnorm_key = next(iter(norm_stats.keys()))
+            overwatch.warning(
+                "No `unnorm_key` provided and model was trained on a single dataset; implicitly using "
+                "statistics for '%s'. If this is unexpected, pass `unnorm_key` explicitly.",
+                unnorm_key,
+            )
 
         # Error Handling
         assert (
@@ -125,7 +130,7 @@ class OpenVLA(PrismaticVLM):
         return len(self.norm_stats[unnorm_key]["action"]["q01"])
 
     def get_action_stats(self, unnorm_key: Optional[str] = None) -> Dict:
-        """Dimensionality of the policy's action space."""
+        """Normalization statistics (q01, q99) for the policy's action space."""
         unnorm_key = self._check_unnorm_key(self.norm_stats, unnorm_key)
 
         return self.norm_stats[unnorm_key]["action"]

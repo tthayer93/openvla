@@ -27,7 +27,9 @@ Note that if your server is not accessible on the open web, you can use ngrok, o
     => `ssh -L 8000:localhost:8000 ssh USER@<SERVER_IP>`
 """
 
-import os.path
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # ruff: noqa: E402
 import json_numpy
@@ -40,6 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+import numpy as np
 import draccus
 import torch
 import uvicorn
@@ -85,8 +88,16 @@ class OpenVLAServer:
 
         # [Hacky] Load Dataset Statistics from Disk (if passing a path to a fine-tuned model)
         if os.path.isdir(self.openvla_path):
-            with open(Path(self.openvla_path) / "dataset_statistics.json", "r") as f:
-                self.vla.norm_stats = json.load(f)
+            stats_path = Path(self.openvla_path) / "dataset_statistics.json"
+            if stats_path.exists():
+                with open(stats_path, "r") as f:
+                    self.vla.norm_stats = json.load(f)
+            else:
+                logging.warning(
+                    "No `dataset_statistics.json` found at %s; actions will remain normalized. "
+                    "Provide the `unnorm_key` parameter explicitly in requests or ensure statistics were saved.",
+                    str(stats_path)
+                )
 
     def predict_action(self, payload: Dict[str, Any]) -> str:
         try:
@@ -99,15 +110,18 @@ class OpenVLAServer:
             image, instruction = payload["image"], payload["instruction"]
             unnorm_key = payload.get("unnorm_key", None)
 
-            # Run VLA Inference
+            # Process inputs through the HF processor (image may be a list from JSON)
             prompt = get_openvla_prompt(instruction, self.openvla_path)
-            inputs = self.processor(prompt, Image.fromarray(image).convert("RGB")).to(self.device, dtype=torch.bfloat16)
+            image_array = np.asarray(image).astype(np.uint8) if not isinstance(image, Image.Image) else np.array(image)
+            inputs = self.processor(prompt, Image.fromarray(image_array).convert("RGB")).to(self.device, dtype=torch.bfloat16)
+
+            # Run VLA Inference
             action = self.vla.predict_action(**inputs, unnorm_key=unnorm_key, do_sample=False)
             if double_encode:
                 return JSONResponse(json_numpy.dumps(action))
             else:
                 return JSONResponse(action)
-        except:  # noqa: E722
+        except Exception:
             logging.error(traceback.format_exc())
             logging.warning(
                 "Your request threw an error; make sure your request complies with the expected format:\n"
