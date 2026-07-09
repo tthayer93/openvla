@@ -380,21 +380,21 @@ def finetune(cfg: FinetuneConfig) -> None:
                 optimizer.zero_grad()
                 progress.update()
 
-            # Save Model Checkpoint =>> by default, only keeps the latest checkpoint, continually overwriting it!
-            if gradient_step_idx > 0 and gradient_step_idx % cfg.save_steps == 0:
-                if distributed_state.is_main_process:
-                    print(f"Saving Model Checkpoint for Step {gradient_step_idx}")
+                # Save Model Checkpoint =>> by default, only keeps the latest checkpoint, continually overwriting it!
+                if gradient_step_idx > 0 and gradient_step_idx % cfg.save_steps == 0:
+                    if distributed_state.is_main_process:
+                        print(f"Saving Model Checkpoint for Step {gradient_step_idx}")
 
-                    # If LoRA, save only adapter weights (merging done post-hoc after training)
-                    save_dir = adapter_dir if cfg.use_lora else run_dir
+                        # If LoRA, save only adapter weights (merging done post-hoc after training)
+                        save_dir = adapter_dir if cfg.use_lora else run_dir
 
-                    # Save Processor & Weights
-                    processor.save_pretrained(run_dir)
-                    vla.module.save_pretrained(save_dir)
+                        # Save Processor & Weights
+                        processor.save_pretrained(run_dir)
+                        vla.module.save_pretrained(save_dir)
 
-                dist.barrier()
-                # Force GC at checkpoint boundaries to prevent system RAM leaks during long runs
-                gc.collect()
+                    dist.barrier()
+                    # Force GC at checkpoint boundaries to prevent system RAM leaks during long runs
+                    gc.collect()
 
             # Stop training when max_steps is reached
             if gradient_step_idx == cfg.max_steps:
